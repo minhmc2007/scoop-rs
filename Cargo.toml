@@ -1,0 +1,61 @@
+[package]
+name = "scoop-rs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "A fast, native-Rust client for the Scoop package-manager ecosystem, with a pacman-style local SQLite database"
+license = "MIT"
+repository = "https://example.invalid/scoop-rs"
+keywords = ["scoop", "package-manager", "windows", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "scoop-rs"
+path = "src/main.rs"
+
+[lib]
+name = "scoop_rs"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust = "0.6"
+tar = "0.4"
+flate2 = "1"
+regex = "1"
+fs2 = "0.4"
+indicatif = "0.17"
+console = "0.15"
+url = "2"
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# TLS backends are chosen per target so we never need OpenSSL anywhere:
+#   * Windows  -> native-tls -> schannel (same stack as Scoop's .NET client)
+#   * Unix     -> rustls (pure Rust, ring)
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "charset", "http2", "default-tls"] }
+winreg = "0.52"
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "charset", "http2", "rustls-tls"] }
+
+[dev-dependencies]
+tempfile = "3"
+tiny_http = "0.12"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

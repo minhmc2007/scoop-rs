@@ -1,0 +1,10 @@
+# Cross-compiling to Windows from Linux/macOS:
+#   rustup target add x86_64-pc-windows-gnu
+#   PATH must contain x86_64-w64-mingw32-gcc (e.g. apt install mingw-w64, or the
+#   extracted user-space toolchain described in README.md)
+# then: cargo build --release --target x86_64-pc-windows-gnu
+#
+# On Windows itself build natively with the MSVC toolchain - this linker
+# override is ignored unless the gnu target is explicitly requested.
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
