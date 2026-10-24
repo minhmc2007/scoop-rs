@@ -333,11 +333,31 @@ pub fn remove_link(link: &Path) -> Result<()> {
     }
     match std::fs::symlink_metadata(link) {
         Ok(md) => {
-            if md.is_dir() {
-                // junctions appear as dirs but remove_dir removes only the link
-                std::fs::remove_dir(link)?;
+            // On Windows, symlink_metadata may describe a directory junction as
+            // a reparse point rather than a regular directory. Use the Windows
+            // file-type extension to select RemoveDirectoryW for junctions;
+            // RemoveFileW returns ERROR_ACCESS_DENIED for directory junctions.
+            #[cfg(windows)]
+            let is_directory = {
+                use std::os::windows::fs::FileTypeExt;
+                md.is_dir() || md.file_type().is_symlink_dir()
+            };
+            #[cfg(not(windows))]
+            let is_directory = md.is_dir();
+
+            if is_directory {
+                // Junctions appear as directories but remove_dir removes only
+                // the link, never the target directory.
+                std::fs::remove_dir(link).map_err(|e| {
+                    ScoopError::other(format!(
+                        "failed to remove directory link {}: {e}",
+                        link.display()
+                    ))
+                })?;
             } else {
-                std::fs::remove_file(link)?;
+                std::fs::remove_file(link).map_err(|e| {
+                    ScoopError::other(format!("failed to remove link {}: {e}", link.display()))
+                })?;
             }
             Ok(())
         }
@@ -422,6 +442,25 @@ mod tests {
             "file.exe"
         );
         assert_eq!(url_filename("https://x.io/"), "download");
+    }
+
+    #[test]
+    fn remove_directory_link_preserves_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        let link = dir.path().join("link");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), b"keep").unwrap();
+
+        make_dir_link(&link, &target).unwrap();
+        assert!(is_link(&link));
+
+        remove_link(&link).unwrap();
+
+        assert!(target.join("keep.txt").is_file());
+        assert!(target.is_dir());
+        assert!(!is_link(&link));
+        assert!(!link.exists());
     }
 
     #[test]
