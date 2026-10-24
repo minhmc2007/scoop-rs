@@ -158,8 +158,17 @@ pub fn is_link(p: &Path) -> bool {
         Ok(md) => {
             #[cfg(windows)]
             {
-                use std::os::windows::fs::FileTypeExt;
-                md.file_type().is_symlink() || md.file_type().is_symlink_dir()
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+
+                let attrs = md.file_attributes();
+                let is_reparse_point = attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+                let is_directory = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
+
+                // Junctions are mount-point reparse points, not symbolic links,
+                // so is_symlink_dir() does not reliably identify them.
+                is_reparse_point && (is_directory || md.file_type().is_symlink())
             }
             #[cfg(not(windows))]
             {
@@ -339,8 +348,9 @@ pub fn remove_link(link: &Path) -> Result<()> {
             // RemoveFileW returns ERROR_ACCESS_DENIED for directory junctions.
             #[cfg(windows)]
             let is_directory = {
-                use std::os::windows::fs::FileTypeExt;
-                md.is_dir() || md.file_type().is_symlink_dir()
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+                md.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0
             };
             #[cfg(not(windows))]
             let is_directory = md.is_dir();
