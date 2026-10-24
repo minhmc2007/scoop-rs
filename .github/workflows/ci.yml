@@ -43,6 +43,7 @@ jobs:
   smoke-test-install:
     name: Windows package install smoke test
     needs: build-windows
+    if: always()
     runs-on: windows-latest
     env:
       SCOOP: ${{ github.workspace }}/scoop-rs-smoke
@@ -75,53 +76,152 @@ jobs:
             throw "Adding the official main bucket failed with exit code $LASTEXITCODE"
           }
 
-      - name: Install and verify aria2
+      - name: Benchmark package search, install, and uninstall
+        id: package-benchmarks
+        if: always()
         shell: pwsh
         run: |
           $binary = Join-Path $PWD 'dist/scoop-rs.exe'
-          & $binary --no-progress install aria2
-          if ($LASTEXITCODE -ne 0) {
-            throw "Installing aria2 failed with exit code $LASTEXITCODE"
+          $results = [ordered]@{}
+
+          function Format-Detail([string]$Message) {
+            $clean = $Message -replace '[\r\n|`]', ' '
+            if ($clean.Length -gt 180) {
+              $clean = $clean.Substring(0, 180)
+            }
+            return $clean
           }
 
-          $listOutput = & $binary --no-progress list --json
-          if ($LASTEXITCODE -ne 0) {
-            throw "Listing installed packages failed with exit code $LASTEXITCODE"
+          function Set-ActionFailure([string]$Name, [string]$Message) {
+            $key = $Name.ToLowerInvariant()
+            $results[$key].Status = 'FAIL'
+            $previous = $results[$key].Detail
+            if ($previous -and $previous -ne 'Completed successfully') {
+              $Message = "$previous; $Message"
+            }
+            $results[$key].Detail = Format-Detail $Message
           }
 
-          $packages = $listOutput | ConvertFrom-Json
-          if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -eq 0) {
-            throw "aria2 was not recorded in the local package database"
+          function Invoke-TimedCommand([string]$Name, [string[]]$Arguments) {
+            $watch = [System.Diagnostics.Stopwatch]::StartNew()
+            $status = 'PASS'
+            $detail = 'Completed successfully'
+            try {
+              if (-not (Test-Path $binary)) {
+                throw "Windows build artifact was not found: $binary"
+              }
+
+              $global:LASTEXITCODE = 0
+              $commandOutput = @(& $binary @Arguments 2>&1)
+              $exitCode = $LASTEXITCODE
+              foreach ($line in $commandOutput) {
+                Write-Host "$line"
+              }
+              if ($exitCode -ne 0) {
+                throw "Command exited with code $exitCode"
+              }
+              if ($Name -eq 'search' -and (($commandOutput -join "`n") -notmatch '(?i)aria2')) {
+                throw 'Search completed but returned no aria2 match'
+              }
+            } catch {
+              $status = 'FAIL'
+              $detail = Format-Detail $_.Exception.Message
+            } finally {
+              $watch.Stop()
+            }
+
+            $results[$Name] = [pscustomobject]@{
+              Status = $status
+              Seconds = $watch.Elapsed.TotalSeconds.ToString('F3', [System.Globalization.CultureInfo]::InvariantCulture)
+              Detail = $detail
+            }
+            Write-Host "$Name benchmark: $status ($($results[$Name].Seconds) s) - $detail"
           }
 
-          $aria2 = Join-Path $env:SCOOP 'apps/aria2/current/aria2c.exe'
-          if (-not (Test-Path $aria2)) {
-            throw "Installed aria2 executable was not found: $aria2"
+          Invoke-TimedCommand -Name 'search' -Arguments @('--no-progress', 'search', 'aria2')
+
+          Invoke-TimedCommand -Name 'install' -Arguments @('--no-progress', 'install', 'aria2')
+          try {
+            if (-not (Test-Path $binary)) {
+              throw "Windows build artifact was not found: $binary"
+            }
+
+            $listOutput = & $binary --no-progress list --json 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Listing installed packages failed with exit code $LASTEXITCODE"
+            }
+            $packages = ($listOutput -join "`n") | ConvertFrom-Json
+            if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -eq 0) {
+              throw 'aria2 was not recorded in the local package database after install'
+            }
+
+            $aria2 = Join-Path $env:SCOOP 'apps/aria2/current/aria2c.exe'
+            if (-not (Test-Path $aria2)) {
+              throw "Installed aria2 executable was not found: $aria2"
+            }
+
+            & $aria2 --version | Out-Host
+            if ($LASTEXITCODE -ne 0) {
+              throw 'The installed aria2 executable failed to start'
+            }
+          } catch {
+            Set-ActionFailure -Name 'install' -Message "Post-install verification failed: $($_.Exception.Message)"
           }
 
-          & $aria2 --version
-          if ($LASTEXITCODE -ne 0) {
-            throw "The installed aria2 executable failed to start"
+          Invoke-TimedCommand -Name 'uninstall' -Arguments @('--no-progress', 'uninstall', 'aria2')
+          try {
+            if (-not (Test-Path $binary)) {
+              throw "Windows build artifact was not found: $binary"
+            }
+
+            $listOutput = & $binary --no-progress list --json 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              throw "Listing packages after uninstall failed with exit code $LASTEXITCODE"
+            }
+            $packages = ($listOutput -join "`n") | ConvertFrom-Json
+            if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -gt 0) {
+              throw 'aria2 is still recorded as installed after uninstall'
+            }
+          } catch {
+            Set-ActionFailure -Name 'uninstall' -Message "Cleanup verification failed: $($_.Exception.Message)"
           }
 
-      - name: Uninstall aria2 and verify cleanup
+          $summaryOutputs = @()
+          foreach ($key in @('search', 'install', 'uninstall')) {
+            $result = $results[$key]
+            $summaryOutputs += "${key}_seconds=$($result.Seconds)"
+            $summaryOutputs += "${key}_status=$($result.Status)"
+            $summaryOutputs += "${key}_detail=$(Format-Detail $result.Detail)"
+          }
+          $summaryOutputs | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          if (@($results.Values | Where-Object { $_.Status -ne 'PASS' }).Count -gt 0) {
+            throw 'One or more package benchmark sections failed; see the job summary.'
+          }
+
+      - name: Publish benchmark summary
+        if: always()
         shell: pwsh
+        env:
+          SEARCH_SECONDS: ${{ steps.package-benchmarks.outputs.search_seconds || 'N/A' }}
+          SEARCH_STATUS: ${{ steps.package-benchmarks.outputs.search_status || 'FAIL' }}
+          SEARCH_DETAIL: ${{ steps.package-benchmarks.outputs.search_detail || 'Benchmark did not produce a result' }}
+          INSTALL_SECONDS: ${{ steps.package-benchmarks.outputs.install_seconds || 'N/A' }}
+          INSTALL_STATUS: ${{ steps.package-benchmarks.outputs.install_status || 'FAIL' }}
+          INSTALL_DETAIL: ${{ steps.package-benchmarks.outputs.install_detail || 'Benchmark did not produce a result' }}
+          UNINSTALL_SECONDS: ${{ steps.package-benchmarks.outputs.uninstall_seconds || 'N/A' }}
+          UNINSTALL_STATUS: ${{ steps.package-benchmarks.outputs.uninstall_status || 'FAIL' }}
+          UNINSTALL_DETAIL: ${{ steps.package-benchmarks.outputs.uninstall_detail || 'Benchmark did not produce a result' }}
         run: |
-          $binary = Join-Path $PWD 'dist/scoop-rs.exe'
-          & $binary --no-progress uninstall aria2
-          if ($LASTEXITCODE -ne 0) {
-            throw "Uninstalling aria2 failed with exit code $LASTEXITCODE"
-          }
+          @"
+          ## Windows package benchmarks
 
-          $listOutput = & $binary --no-progress list --json
-          if ($LASTEXITCODE -ne 0) {
-            throw "Listing packages after uninstall failed with exit code $LASTEXITCODE"
-          }
-
-          $packages = $listOutput | ConvertFrom-Json
-          if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -gt 0) {
-            throw "aria2 is still recorded as installed after uninstall"
-          }
+          | Operation | Duration | Status | Details |
+          |---|---:|---|---|
+          | Search (aria2) | $env:SEARCH_SECONDS s | **$env:SEARCH_STATUS** | $env:SEARCH_DETAIL |
+          | Install (aria2) | $env:INSTALL_SECONDS s | **$env:INSTALL_STATUS** | $env:INSTALL_DETAIL |
+          | Uninstall (aria2) | $env:UNINSTALL_SECONDS s | **$env:UNINSTALL_STATUS** | $env:UNINSTALL_DETAIL |
+          "@ >> $env:GITHUB_STEP_SUMMARY
 
   build-windows-gnu:
     runs-on: ubuntu-latest
