@@ -34,6 +34,8 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
       - run: cargo clippy --all-targets -- -D warnings
+      - name: Test Windows junction removal
+        run: cargo test --lib remove_directory_link_preserves_target
       - run: cargo build --release --target x86_64-pc-windows-msvc
       - uses: actions/upload-artifact@v4
         with:
