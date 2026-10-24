@@ -31,10 +31,11 @@ impl Drop for TestServer {
 
 fn serve(payload: Vec<u8>) -> (TestServer, String) {
     let server = tiny_http::Server::http("127.0.0.1:0").expect("bind test server");
-    let port = match server.server_addr() {
-        tiny_http::ListenAddr::IP(a) => a.port(),
-        _ => panic!("no port"),
-    };
+    let port = server
+        .server_addr()
+        .to_ip()
+        .expect("test server must use an IP socket")
+        .port();
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let shutdown_t = Arc::clone(&shutdown);
     let payload = Arc::new(payload);
