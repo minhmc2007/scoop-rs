@@ -45,7 +45,7 @@ jobs:
     needs: build-windows
     runs-on: windows-latest
     env:
-      SCOOP: ${{ github.workspace }}\scoop-rs-smoke
+      SCOOP: ${{ github.workspace }}/scoop-rs-smoke
     steps:
       - name: Download the Windows x64 build
         uses: actions/download-artifact@v4
