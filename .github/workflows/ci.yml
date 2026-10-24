@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, master]
+    branches: [dev, main, master]
   pull_request:
   workflow_dispatch:
 
@@ -39,6 +39,89 @@ jobs:
         with:
           name: scoop-rs-windows-x86_64
           path: target/x86_64-pc-windows-msvc/release/scoop-rs.exe
+
+  smoke-test-install:
+    name: Windows package install smoke test
+    needs: build-windows
+    runs-on: windows-latest
+    env:
+      SCOOP: ${{ github.workspace }}/scoop-rs-smoke
+    steps:
+      - name: Download the Windows x64 build
+        uses: actions/download-artifact@v4
+        with:
+          name: scoop-rs-windows-x86_64
+          path: dist
+
+      - name: Verify the binary starts
+        shell: pwsh
+        run: |
+          $binary = Join-Path $PWD 'dist/scoop-rs.exe'
+          if (-not (Test-Path $binary)) {
+            throw "Windows build artifact was not found: $binary"
+          }
+
+          & $binary --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "scoop-rs --version failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Add the official main bucket
+        shell: pwsh
+        run: |
+          $binary = Join-Path $PWD 'dist/scoop-rs.exe'
+          & $binary --no-progress bucket add main
+          if ($LASTEXITCODE -ne 0) {
+            throw "Adding the official main bucket failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Install and verify aria2
+        shell: pwsh
+        run: |
+          $binary = Join-Path $PWD 'dist/scoop-rs.exe'
+          & $binary --no-progress install aria2
+          if ($LASTEXITCODE -ne 0) {
+            throw "Installing aria2 failed with exit code $LASTEXITCODE"
+          }
+
+          $listOutput = & $binary --no-progress list --json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Listing installed packages failed with exit code $LASTEXITCODE"
+          }
+
+          $packages = $listOutput | ConvertFrom-Json
+          if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -eq 0) {
+            throw "aria2 was not recorded in the local package database"
+          }
+
+          $aria2 = Join-Path $env:SCOOP 'apps/aria2/current/aria2c.exe'
+          if (-not (Test-Path $aria2)) {
+            throw "Installed aria2 executable was not found: $aria2"
+          }
+
+          & $aria2 --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed aria2 executable failed to start"
+          }
+
+      - name: Uninstall aria2 and verify cleanup
+        shell: pwsh
+        run: |
+          $binary = Join-Path $PWD 'dist/scoop-rs.exe'
+          & $binary --no-progress uninstall aria2
+          if ($LASTEXITCODE -ne 0) {
+            throw "Uninstalling aria2 failed with exit code $LASTEXITCODE"
+          }
+
+          $listOutput = & $binary --no-progress list --json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Listing packages after uninstall failed with exit code $LASTEXITCODE"
+          }
+
+          $packages = $listOutput | ConvertFrom-Json
+          if (@($packages | Where-Object { $_.name -eq 'aria2' }).Count -gt 0) {
+            throw "aria2 is still recorded as installed after uninstall"
+          }
 
   build-windows-gnu:
     runs-on: ubuntu-latest
