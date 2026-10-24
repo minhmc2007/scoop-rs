@@ -356,10 +356,7 @@ pub fn remove_link(link: &Path) -> Result<()> {
                 })?;
             } else {
                 std::fs::remove_file(link).map_err(|e| {
-                    ScoopError::other(format!(
-                        "failed to remove link {}: {e}",
-                        link.display()
-                    ))
+                    ScoopError::other(format!("failed to remove link {}: {e}", link.display()))
                 })?;
             }
             Ok(())
